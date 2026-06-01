@@ -31,7 +31,7 @@ def load_model():
 def action(p, thr):
     if p >= thr:
         return "HOLD"
-    if p >= thr / 3:          # grey zone -> queue for analyst
+    if p >= thr / 3:
         return "REVIEW"
     return "PASS"
 
@@ -52,7 +52,6 @@ def main():
 
     proba = model.predict_proba(X.values)[:, 1]
 
-    # per-row top-3 SHAP reasons
     import shap
     sv = shap.TreeExplainer(model).shap_values(X.values)
     reasons = []

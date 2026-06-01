@@ -36,37 +36,25 @@ import xgboost as xgb
 warnings.filterwarnings("ignore")
 RNG = 42
 DATA = "DataSet.csv"
-MISSING_DROP_THRESHOLD = 0.90   # drop features missing in >90% of rows
+MISSING_DROP_THRESHOLD = 0.90
 N_FOLDS = 5
 
-# ---- Leakage control ----------------------------------------------------- #
-# A feature is treated as an OUTCOME-PROXY (target leakage) if it is fully
-# observed (no missingness), (near-)binary, and almost perfectly aligned with
-# the label. Such a column is an after-the-fact "confirmed fraud / blocked"
-# flag, not a signal available at scoring time. Using it inflates metrics to
-# ~1.0 and produces a model that is useless in production.
-LEAK_MAXMISS = 0.02      # essentially never missing
-LEAK_MINAUC = 0.97       # essentially equals the label
-LEAK_MAXUNIQUE = 3       # flag-like
+LEAK_MAXMISS = 0.02
+LEAK_MINAUC = 0.97
+LEAK_MAXUNIQUE = 3
 
 
-# --------------------------------------------------------------------------- #
-# 1. Load + clean
-# --------------------------------------------------------------------------- #
 def load_and_clean():
     df = pd.read_csv(DATA, index_col=0, low_memory=False)
-    label = df.columns[-1]                       # F3924
+    label = df.columns[-1]
     y = df[label].astype(int).values
     X = df.drop(columns=[label])
 
-    # coerce everything numeric (a few cols can parse as object under chunking)
     X = X.apply(pd.to_numeric, errors="coerce")
 
     n0 = X.shape[1]
-    # drop columns that are almost entirely missing
     keep_missing = X.isna().mean() <= MISSING_DROP_THRESHOLD
     X = X.loc[:, keep_missing]
-    # drop constant / zero-variance columns (no signal)
     nunique = X.nunique(dropna=True)
     X = X.loc[:, nunique > 1]
 
@@ -99,24 +87,21 @@ def detect_leakage(X, y):
     return leaks
 
 
-# --------------------------------------------------------------------------- #
-# 2-3. Cross-validated training + OOF predictions
-# --------------------------------------------------------------------------- #
 def make_model(y_train):
     pos = max(int(y_train.sum()), 1)
     neg = int((1 - y_train).sum())
-    spw = neg / pos                              # ~111, counters imbalance
+    spw = neg / pos
     return xgb.XGBClassifier(
         n_estimators=600,
         learning_rate=0.03,
         max_depth=5,
         subsample=0.8,
-        colsample_bytree=0.5,        # subsample huge feature space each tree
+        colsample_bytree=0.5,
         min_child_weight=2,
         reg_lambda=2.0,
         scale_pos_weight=spw,
         objective="binary:logistic",
-        eval_metric="aucpr",         # optimise the metric that matters here
+        eval_metric="aucpr",
         tree_method="hist",
         n_jobs=-1,
         random_state=RNG,
@@ -145,9 +130,6 @@ def cross_validate(X, y):
     return oof
 
 
-# --------------------------------------------------------------------------- #
-# 4. Threshold / operating-point analysis on OOF predictions
-# --------------------------------------------------------------------------- #
 def operating_points(y, oof):
     ap = average_precision_score(y, oof)
     auc = roc_auc_score(y, oof)
@@ -155,7 +137,6 @@ def operating_points(y, oof):
           f"(baseline PR-AUC = positive rate = {y.mean():.4f})")
 
     prec, rec, thr = precision_recall_curve(y, oof)
-    # for several target precisions, find the highest recall achievable
     print("\n  Operating points (pick analyst false-positive budget):")
     print(f"  {'target prec':>11} | {'thresh':>7} | {'precision':>9} | "
           f"{'recall':>6} | {'frauds caught':>13} | {'false alarms':>12}")
@@ -167,7 +148,7 @@ def operating_points(y, oof):
             print(f"  {target:>11.0%} |   (not achievable)")
             continue
         idx = np.where(mask)[0]
-        best = idx[np.argmax(rec[:-1][idx])]     # max recall meeting precision
+        best = idx[np.argmax(rec[:-1][idx])]
         t = thr[best]
         pr, rc = prec[best], rec[best]
         tp = int(round(rc * P))
@@ -175,7 +156,6 @@ def operating_points(y, oof):
         print(f"  {target:>11.0%} | {t:>7.3f} | {pr:>9.3f} | {rc:>6.3f} | "
               f"{tp:>3}/{P:<9} | {fp:>12}")
 
-    # recommended default: threshold maximising F1
     f1 = 2 * prec[:-1] * rec[:-1] / (prec[:-1] + rec[:-1] + 1e-12)
     bi = int(np.argmax(f1))
     t = thr[bi]
@@ -192,9 +172,6 @@ def operating_points(y, oof):
     return float(t)
 
 
-# --------------------------------------------------------------------------- #
-# 5. Final fit + SHAP global importance + persistence
-# --------------------------------------------------------------------------- #
 def finalize(X, y, feat_names, threshold):
     print("\n[5] Refitting on all data + SHAP importance ...")
     model = make_model(y)
@@ -236,7 +213,6 @@ def main():
 
     finalize(X, y, feat_names, threshold)
 
-    # ablation: show the inflated score the leaky flag would have produced
     if leaks:
         print("\n[ABLATION] Same model WITH the leaky outcome flag(s) "
               f"{leaks} added back:")
